@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IL Reports sign-in</title>
+<!--
+  Sign-in and consent page for the "IL Reports" Claude connector (supabase/functions/reports-mcp).
+  Supabase's OAuth server sends people here (Site URL + Authorization Path) with ?authorization_id=...
+  They sign in with their Innovation Learning account, then allow Claude to read IL reports as them.
+  What each person may see is decided in the database (reporting.report_user), not here.
+  The key below is the project's publishable key: public by design, safe in a page.
+  Hosted as a static page outside Supabase (Supabase serves no HTML). Runbook: docs/runbooks/il_reports_connector_setup.md
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root { --bg: #fcfcfb; --text: #0b0b0b; --muted: #6b6a65; --line: #e3e2de; --accent: #2a78d6; --danger: #b3261e;
+  --font: Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1a1a19; --text: #f0efec; --muted: #9a998f; --line: #2f2e2b; --accent: #3987e5; --danger: #ff8a80; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 400 15px/1.5 var(--font); }
+main { max-width: 400px; margin: 12vh auto 0; padding: 0 20px 40px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+p { margin: 0 0 18px; color: var(--muted); }
+label { display: block; font-size: 13px; margin-bottom: 6px; }
+input { width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+button { width: 100%; height: 40px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-weight: 500; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.stack { display: grid; gap: 10px; }
+.or { text-align: center; font-size: 12px; color: var(--muted); margin: 16px 0; }
+.err { color: var(--danger); font-size: 13px; min-height: 20px; margin-top: 10px; }
+.who { font-size: 13px; color: var(--muted); margin-top: 18px; }
+.who button { width: auto; height: auto; border: 0; padding: 0; color: var(--muted); text-decoration: underline; font-weight: 400; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <section id="signin" hidden>
+    <h1>Sign in to IL Reports</h1>
+    <p>Use your Innovation Learning account.</p>
+    <div class="stack">
+      <button id="microsoft" class="primary" hidden>Continue with Microsoft</button>
+    </div>
+    <div class="or" id="orLine" hidden>or get a code by email</div>
+    <form id="emailForm" class="stack">
+      <div><label for="email">Work email</label><input id="email" type="email" autocomplete="email" required></div>
+      <button type="submit" id="sendBtn">Email me a code</button>
+    </form>
+    <form id="codeForm" class="stack" hidden>
+      <div><label for="code">Code from the email</label><input id="code" inputmode="numeric" autocomplete="one-time-code" required></div>
+      <button type="submit" class="primary" id="verifyBtn">Sign in</button>
+    </form>
+  </section>
+
+  <section id="consent" hidden>
+    <h1>Allow Claude to read IL reports?</h1>
+    <p id="consentText"></p>
+    <div class="stack">
+      <button class="primary" id="approve">Allow</button>
+      <button id="deny">Don’t allow</button>
+    </div>
+    <div class="who" id="who"></div>
+  </section>
+
+  <section id="note" hidden>
+    <h1 id="noteTitle"></h1>
+    <p id="noteText"></p>
+  </section>
+  <div class="err" id="err" role="alert"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
+<script>
+const SUPABASE_URL = 'https://buglmlogqpxspemnnqgk.supabase.co';
+const PUBLISHABLE_KEY = 'sb_publishable_QIzcwX_brmJiVi23N5fA8g_aksfhEyl';
+const MICROSOFT = false;   // true once IL's Microsoft sign-in is set up in Supabase (Authentication → Providers → Azure)
+
+const sb = supabase.createClient(SUPABASE_URL, PUBLISHABLE_KEY, { auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true } });
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const authorizationId = params.get('authorization_id') || sessionStorage.getItem('il_authorization_id');
+if (params.get('authorization_id')) sessionStorage.setItem('il_authorization_id', params.get('authorization_id'));
+const show = id => ['signin', 'consent', 'note'].forEach(s => $(s).hidden = s !== id);
+const fail = msg => { $('err').textContent = msg; };
+const note = (title, text) => { $('noteTitle').textContent = title; $('noteText').textContent = text; show('note'); };
+
+async function start() {
+  if (!authorizationId) return note('Nothing to do here', 'Open this page from Claude when you connect IL Reports.');
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) {
+    $('microsoft').hidden = !MICROSOFT; $('orLine').hidden = !MICROSOFT;
+    return show('signin');
+  }
+  const { data, error } = await sb.auth.oauth.getAuthorizationDetails(authorizationId);
+  if (error) return note('This sign-in link has expired', 'Go back to Claude and connect IL Reports again.');
+  if (!('authorization_id' in data)) return finish(data.redirect_url);
+  $('consentText').textContent = `${data.client?.name || 'Claude'} will be able to read Innovation Learning reports as you.` +
+    'It sees only what your IL Reports access allows, and it can’t change anything.';
+  $('who').innerHTML = '';
+  $('who').append(`Signed in as ${data.user?.email || session.user.email}. `);
+  const other = document.createElement('button'); other.textContent = 'Use a different account';
+  other.onclick = async () => { await sb.auth.signOut(); location.reload(); };
+  $('who').append(other);
+  show('consent');
+}
+function finish(url) { sessionStorage.removeItem('il_authorization_id'); location.assign(url); }
+
+$('microsoft').onclick = async () => {
+  const { error } = await sb.auth.signInWithOAuth({ provider: 'azure', options: { scopes: 'email', redirectTo: location.origin + location.pathname } });
+  if (error) fail('Microsoft sign-in isn’t available right now. Use the email code instead.');
+};
+$('emailForm').onsubmit = async e => {
+  e.preventDefault(); fail(''); $('sendBtn').disabled = true;
+  const { error } = await sb.auth.signInWithOtp({ email: $('email').value.trim(), options: { shouldCreateUser: false } });
+  $('sendBtn').disabled = false;
+  if (error) return fail('We couldn’t send a code to that address. IL Reports is only for people Jim Boswell has added.');
+  $('emailForm').hidden = true; $('codeForm').hidden = false; $('code').focus();
+};
+$('codeForm').onsubmit = async e => {
+  e.preventDefault(); fail(''); $('verifyBtn').disabled = true;
+  const { error } = await sb.auth.verifyOtp({ email: $('email').value.trim(), token: $('code').value.trim(), type: 'email' });
+  $('verifyBtn').disabled = false;
+  if (error) return fail('That code didn’t work. Check the newest email, or ask for a new code.');
+  start();
+};
+$('approve').onclick = async () => {
+  $('approve').disabled = $('deny').disabled = true;
+  const { data, error } = await sb.auth.oauth.approveAuthorization(authorizationId);
+  if (error) { $('approve').disabled = $('deny').disabled = false; return fail('That didn’t go through. Go back to Claude and try connecting again.'); }
+  finish(data.redirect_url);
+};
+$('deny').onclick = async () => {
+  const { data, error } = await sb.auth.oauth.denyAuthorization(authorizationId);
+  if (error) return fail('That didn’t go through. You can close this page.');
+  finish(data.redirect_url);
+};
+start();
+</script>
+</body>
+</html>
