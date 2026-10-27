@@ -78,7 +78,7 @@ button:disabled { opacity: .5; cursor: default; }
 <script>
 const SUPABASE_URL = 'https://buglmlogqpxspemnnqgk.supabase.co';
 const PUBLISHABLE_KEY = 'sb_publishable_QIzcwX_brmJiVi23N5fA8g_aksfhEyl';
-const MICROSOFT = false;   // true once IL's Microsoft sign-in is set up in Supabase (Authentication → Providers → Azure)
+const MICROSOFT = true;    // IL's Microsoft sign-in (Supabase Azure provider, on since Oct 27; scripts/set_azure_auth.py)
 
 const sb = supabase.createClient(SUPABASE_URL, PUBLISHABLE_KEY, { auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true } });
 const $ = id => document.getElementById(id);
@@ -99,7 +99,7 @@ async function start() {
   const { data, error } = await sb.auth.oauth.getAuthorizationDetails(authorizationId);
   if (error) return note('This sign-in link has expired', 'Go back to Claude and connect IL Reports again.');
   if (!('authorization_id' in data)) return finish(data.redirect_url);
-  $('consentText').textContent = `${data.client?.name || 'Claude'} will be able to read Innovation Learning reports as you.` +
+  $('consentText').textContent = `${data.client?.name || 'Claude'} will be able to read Innovation Learning reports as you. ` +
     'It sees only what your IL Reports access allows, and it can’t change anything.';
   $('who').innerHTML = '';
   $('who').append(`Signed in as ${data.user?.email || session.user.email}. `);
